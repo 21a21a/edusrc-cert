@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "EDUSRC 证书兑换助手",
+  "version": "1.2.0",
+  "description": "登录 EDUSRC 后自动匹配你可兑换的漏洞证书",
+  "permissions": ["storage", "tabs", "cookies", "scripting"],
+  "host_permissions": ["https://src.sjtu.edu.cn/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "EDUSRC 证书兑换助手"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://src.sjtu.edu.cn/*"],
+      "js": ["content/engine.js", "content/bridge.js", "content/badge.js"],
+      "css": ["content/badge.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

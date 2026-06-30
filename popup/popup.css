@@ -1,0 +1,259 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 420px;
+  max-height: 560px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  font-size: 13px;
+  color: #1a1a2e;
+  background: #f8f9fc;
+}
+
+header {
+  padding: 14px 16px 10px;
+  background: linear-gradient(135deg, #1e3a5f, #2563eb);
+  color: #fff;
+}
+
+header h1 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sub {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.hint {
+  margin: 12px 16px;
+  padding: 10px 12px;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  color: #92400e;
+  line-height: 1.5;
+}
+
+.hint a {
+  color: #2563eb;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px 0;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.stats span {
+  background: #e2e8f0;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.filter-opts {
+  display: flex;
+  gap: 14px;
+  padding: 0 16px 10px;
+  font-size: 12px;
+  color: #475569;
+}
+
+.filter-opts label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.filter-opts input {
+  accent-color: #2563eb;
+}
+
+.actions {
+  padding: 12px 16px;
+}
+
+.btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: #2563eb;
+  color: #fff;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.progress {
+  padding: 0 16px 12px;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #475569;
+}
+
+#progress-pct {
+  font-weight: 600;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2563eb, #3b82f6);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.results {
+  padding: 0 16px 16px;
+}
+
+.empty {
+  text-align: center;
+  color: #94a3b8;
+  padding: 20px 0;
+}
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.card.eligible {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.card-title {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.4;
+  flex: 1;
+}
+
+.badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge.ok {
+  background: #22c55e;
+  color: #fff;
+}
+
+.badge.pending {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.badge.no {
+  background: #e2e8f0;
+  color: #64748b;
+}
+
+.card-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.card-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.card-vulns {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #cbd5e1;
+}
+
+.card-vulns summary {
+  font-size: 11px;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.vuln-item {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #334155;
+}
+
+.vuln-item a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.card-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin: 8px 0 6px;
+}

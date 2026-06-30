@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDUSRC 证书兑换助手</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>证书兑换助手</h1>
+    <p class="sub">使用当前浏览器登录态，数据按用户隔离</p>
+  </header>
+
+  <div id="login-hint" class="hint hidden">
+    请先在浏览器中登录
+    <a href="https://src.sjtu.edu.cn/login/" target="_blank">EDUSRC</a>
+    后再使用本插件。
+  </div>
+
+  <div id="stats" class="stats hidden">
+    <span id="stat-vulns"></span>
+    <span id="stat-time"></span>
+  </div>
+
+  <div class="filter-opts">
+    <label><input type="checkbox" id="opt-exclude-failed" checked /> 排除未通过</label>
+    <label><input type="checkbox" id="opt-include-pending" /> 计入待审核</label>
+  </div>
+
+  <div class="actions">
+    <button id="btn-scan" class="btn primary">扫描可兑换证书</button>
+  </div>
+
+  <div id="progress" class="progress hidden">
+    <div class="progress-row">
+      <span id="progress-text">扫描中…</span>
+      <span id="progress-pct">0%</span>
+    </div>
+    <div class="progress-track">
+      <div id="progress-bar" class="progress-bar"></div>
+    </div>
+  </div>
+
+  <div id="results" class="results"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
