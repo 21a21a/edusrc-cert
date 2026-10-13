@@ -3,6 +3,7 @@
   g.__EDUSRC_BRIDGE__ = true;
 
   let scanPromise = null;
+  let userScanPromise = null;
 
   function reportProgress(p) {
     chrome.runtime.sendMessage({ type: "SET_PROGRESS", progress: p }).catch(() => {});
@@ -15,6 +16,25 @@
     reportProgress({ text: "开始扫描…", percent: 0, running: true });
     const scan = await api.runScan((p) => reportProgress(p), matchOptions);
     await chrome.runtime.sendMessage({ type: "SAVE_SCAN", scan });
+    reportProgress({ text: "完成", percent: 100, running: false });
+    return scan;
+  }
+
+  async function doUserScan(targetUserId, matchOptions) {
+    const api = g.EdusrcApi;
+    if (!api?.runUserScan) throw new Error("核心模块未加载，请刷新页面");
+
+    reportProgress({ text: "开始分析他人…", percent: 0, running: true });
+    const scan = await api.runUserScan(
+      targetUserId,
+      (p) => reportProgress(p),
+      matchOptions
+    );
+    await chrome.runtime.sendMessage({
+      type: "SAVE_USER_SCAN",
+      targetUserId: String(targetUserId),
+      scan,
+    });
     reportProgress({ text: "完成", percent: 100, running: false });
     return scan;
   }
@@ -42,6 +62,28 @@
       return true;
     }
 
+    if (msg.type === "RUN_USER_SCAN") {
+      if (!userScanPromise) {
+        userScanPromise = doUserScan(msg.targetUserId, msg.matchOptions).finally(() => {
+          userScanPromise = null;
+        });
+      }
+      userScanPromise
+        .then((scan) => sendResponse({ ok: true, scan }))
+        .catch((err) =>
+          sendResponse({
+            ok: false,
+            error:
+              err.message === "NOT_LOGGED_IN"
+                ? "NOT_LOGGED_IN"
+                : err.message === "USER_NOT_FOUND"
+                  ? "USER_NOT_FOUND"
+                  : err.message,
+          })
+        );
+      return true;
+    }
+
     if (msg.type === "REMATCH_SCAN") {
       (async () => {
         try {
@@ -59,6 +101,30 @@
       })();
       return true;
     }
+
+    if (msg.type === "REMATCH_USER_SCAN") {
+      (async () => {
+        try {
+          const api = g.EdusrcApi;
+          if (!api?.rematchUserScan) {
+            sendResponse({ ok: false, error: "模块未加载" });
+            return;
+          }
+          const scan = api.rematchUserScan(msg.scan, msg.matchOptions);
+          await chrome.runtime.sendMessage({
+            type: "SAVE_USER_SCAN",
+            targetUserId: scan.targetUser?.userId || msg.scan?.targetUser?.userId,
+            scan,
+          });
+          sendResponse({ ok: true, scan });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message });
+        }
+      })();
+      return true;
+    }
+
+    if (msg.type === "GET_SESSION") {
       (async () => {
         try {
           const parser = g.EdusrcParser;

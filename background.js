@@ -2,11 +2,29 @@ const CACHE_TTL = 30 * 60 * 1000;
 const EDUSRC = "https://src.sjtu.edu.cn/";
 const SCAN_URL = "https://src.sjtu.edu.cn/gift/";
 const CORE_FILES = ["content/engine.js", "content/bridge.js"];
-const EXPECTED_ENGINE_VERSION = 7;
+const EXPECTED_ENGINE_VERSION = 14;
 const MATCH_OPTIONS_KEY = "edusrc_match_options";
 
 function storageKey(userId) {
   return `edusrc_scan_${userId}`;
+}
+
+function userScanStorageKey(targetUserId) {
+  return `edusrc_user_scan_${targetUserId}`;
+}
+
+async function getCachedUserScan(targetUserId) {
+  const key = userScanStorageKey(targetUserId);
+  const data = await chrome.storage.local.get(key);
+  const cached = data[key];
+  if (!cached) return null;
+  if (cached.engineVersion !== EXPECTED_ENGINE_VERSION) return null;
+  if (Date.now() - cached.scannedAt > CACHE_TTL) return null;
+  return cached;
+}
+
+async function saveUserScan(targetUserId, scan) {
+  await chrome.storage.local.set({ [userScanStorageKey(targetUserId)]: scan });
 }
 
 async function getCachedScan(userId) {
@@ -163,6 +181,65 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "LOAD_USER_CACHE") {
+    getCachedUserScan(msg.targetUserId)
+      .then((scan) => sendResponse({ ok: true, scan }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (msg.type === "SAVE_USER_SCAN") {
+    saveUserScan(msg.targetUserId, msg.scan)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (msg.type === "START_USER_SCAN") {
+    if (bgScanPromise) {
+      bgScanPromise.then((res) => sendResponse(res)).catch((err) =>
+        sendResponse({ ok: false, error: err.message })
+      );
+      return true;
+    }
+
+    progress = { text: "分析他人…", percent: 0, running: true };
+    bgScanPromise = sendToEdusrcTab({
+      type: "RUN_USER_SCAN",
+      targetUserId: msg.targetUserId,
+      matchOptions: msg.matchOptions,
+    })
+      .then((res) => {
+        if (!res?.ok) {
+          progress = { text: res?.error || "分析失败", percent: 0, running: false };
+          return res;
+        }
+        progress = { text: "完成", percent: 100, running: false };
+        return res;
+      })
+      .catch((err) => {
+        progress = { text: err.message, percent: 0, running: false };
+        return { ok: false, error: err.message };
+      })
+      .finally(() => {
+        bgScanPromise = null;
+      });
+
+    bgScanPromise.then((res) => sendResponse(res));
+    return true;
+  }
+
+  if (msg.type === "REMATCH_USER_SCAN") {
+    sendToEdusrcTab({
+      type: "REMATCH_USER_SCAN",
+      scan: msg.scan,
+      matchOptions: msg.matchOptions,
+    })
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   if (msg.type === "LOAD_CACHE") {
     getCachedScan(msg.userId)
       .then((scan) => sendResponse({ ok: true, scan }))
@@ -274,7 +351,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(async () => {
   const all = await chrome.storage.local.get(null);
   const keys = Object.keys(all).filter(
-    (k) => k.startsWith("edusrc_scan_") || k === "edusrc_gift_catalog_v1"
+    (k) =>
+      k.startsWith("edusrc_scan_") ||
+      k.startsWith("edusrc_user_scan_") ||
+      k === "edusrc_gift_catalog_v1" ||
+      k === "edusrc_gift_catalog_v2" ||
+      k === "edusrc_tangible_catalog_v1" ||
+      k === "edusrc_tangible_catalog_v2"
   );
   if (keys.length) await chrome.storage.local.remove(keys);
 });

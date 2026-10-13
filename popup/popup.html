@@ -8,8 +8,8 @@
 </head>
 <body>
   <header>
-    <h1>证书兑换助手</h1>
-    <p class="sub">使用当前浏览器登录态，数据按用户隔离</p>
+    <h1>礼品兑换助手</h1>
+    <p class="sub">漏洞证书 + 实物礼物，使用当前浏览器登录态</p>
   </header>
 
   <div id="login-hint" class="hint hidden">
@@ -28,8 +28,17 @@
     <label><input type="checkbox" id="opt-include-pending" /> 计入待审核</label>
   </div>
 
+  <div class="user-lookup">
+    <label class="lookup-label" for="user-id-input">查看他人可兑换</label>
+    <div class="lookup-row">
+      <input id="user-id-input" type="text" placeholder="用户 ID 或 profile 链接" />
+      <button id="btn-user-scan" class="btn secondary" type="button">分析</button>
+    </div>
+    <p class="lookup-hint">在他人主页 <code>/profile/12345/</code> 打开扩展可自动分析；金币按 Rank 估算</p>
+  </div>
+
   <div class="actions">
-    <button id="btn-scan" class="btn primary">扫描可兑换证书</button>
+    <button id="btn-scan" class="btn primary">扫描可兑换礼品</button>
   </div>
 
   <div id="progress" class="progress hidden">

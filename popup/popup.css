@@ -79,6 +79,69 @@ header h1 {
   accent-color: #2563eb;
 }
 
+.btn.secondary {
+  background: #e2e8f0;
+  color: #334155;
+  width: auto;
+  padding: 10px 14px;
+  flex-shrink: 0;
+}
+
+.user-lookup {
+  padding: 0 16px 12px;
+}
+
+.lookup-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 6px;
+}
+
+.lookup-row {
+  display: flex;
+  gap: 8px;
+}
+
+.lookup-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.lookup-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
+.lookup-hint code {
+  font-size: 10px;
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.user-banner {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #1e40af;
+}
+
+.user-banner a {
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+}
+
 .actions {
   padding: 12px 16px;
 }

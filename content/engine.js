@@ -1,5 +1,5 @@
 (function (g) {
-  const ENGINE_VERSION = 7;
+  const ENGINE_VERSION = 14;
   if (g.__EDUSRC_ENGINE_V__ === ENGINE_VERSION && g.EdusrcParser) return;
   delete g.EdusrcParser;
   delete g.EdusrcMatcher;
@@ -44,6 +44,45 @@
     if (profileLink) {
       const match = profileLink.getAttribute("href").match(/\/profile\/(\d+)\//);
       if (match) return match[1];
+    }
+    return null;
+  }
+
+  function extractCoins(html) {
+    if (!html) return null;
+
+    const doc = parseHtml(html);
+    let found = null;
+
+    doc.querySelectorAll(".am-g").forEach((row) => {
+      row.querySelectorAll(".am-u-sm-2, .am-u-sm-3").forEach((label) => {
+        if (!/^金币$/.test(label.textContent.trim())) return;
+        const value =
+          label.nextElementSibling ||
+          row.querySelector(".am-u-sm-10, .am-u-sm-9, .am-u-sm-4");
+        if (!value || value === label) return;
+        const n = parseInt(value.textContent.match(/(\d+)/)?.[1], 10);
+        if (!Number.isNaN(n)) found = n;
+      });
+    });
+    if (found !== null) return found;
+
+    doc.querySelectorAll("tr").forEach((row) => {
+      const cells = row.querySelectorAll("td, th");
+      if (cells.length < 2 || !/金币/.test(cells[0].textContent)) return;
+      const n = parseInt(cells[1].textContent.match(/(\d+)/)?.[1], 10);
+      if (!Number.isNaN(n)) found = n;
+    });
+    if (found !== null) return found;
+
+    const patterns = [
+      /(?:我的|当前|剩余)?金币[：:\s]*(\d+)/,
+      /金币余额[：:\s]*(\d+)/,
+      /拥有\s*(\d+)\s*金币/,
+    ];
+    for (const re of patterns) {
+      const m = html.match(re);
+      if (m) return parseInt(m[1], 10);
     }
     return null;
   }
@@ -153,6 +192,35 @@
     return vulns;
   }
 
+  function extractPublicProfileMeta(html) {
+    const doc = parseHtml(html);
+    let nickname = "";
+    const titleEl = doc.querySelector(".am-panel-title");
+    if (titleEl) nickname = titleEl.textContent.replace(/\s*的个人中心\s*$/, "").trim();
+    if (!nickname) {
+      const bq = doc.querySelector("blockquote");
+      if (bq) nickname = bq.textContent.trim();
+    }
+    let rank = null;
+    const rankMatch = html.match(/Rank[：:\s]*(\d+)/);
+    if (rankMatch) rank = parseInt(rankMatch[1], 10);
+    let approvedCount = null;
+    const ap = html.match(/已审核通过漏洞数量[：:\s]*(\d+)/);
+    if (ap) approvedCount = parseInt(ap[1], 10);
+    let totalCount = null;
+    const tp = html.match(/总提交漏洞数量[：:\s]*(\d+)/);
+    if (tp) totalCount = parseInt(tp[1], 10);
+    return { nickname, rank, approvedCount, totalCount };
+  }
+
+  function isProfileNotFound(html) {
+    return (
+      /<title>\s*Not Found/i.test(html) ||
+      /<h1>\s*Not Found/i.test(html) ||
+      /was not found on this server/i.test(html)
+    );
+  }
+
   function getMaxPage(html) {
     const doc = parseHtml(html);
     let max = 1;
@@ -244,6 +312,9 @@
     isLoginPage,
     detectSession,
     extractUserId,
+    extractCoins,
+    extractPublicProfileMeta,
+    isProfileNotFound,
     parseVulnTable,
     getMaxPage,
     parseGiftList,
@@ -252,19 +323,245 @@
 })(globalThis);
 
 (function (g) {
-  if (g.__EDUSRC_ENGINE_V__ !== 7 || !g.EdusrcParser) return;
+  if (g.__EDUSRC_ENGINE_V__ !== 14 || !g.EdusrcParser) return;
 
   const { SEVERITY_MAP } = g.EdusrcParser;
 
+  /** 校名结尾（用于识别「仍是学校称谓」） */
+  const SCHOOL_TAIL_RE = /(?:职业技术学院|职业学院|高等专科学校|师范专科学校|专科学校|大学|学院|学校|分校)$/;
+
+  /**
+   * 母体高校下的内设院系/部门（匹配母体证书时视为同一学校）
+   * 不含独立学院专名（成贤/金陵等）
+   */
+  const INTERNAL_UNIT_RE =
+    /^(?:本部|主校区|东校区|西校区|南校区|北校区|新校区|老校区|[\u4e00-\u9fff]{1,8}校区|研究生院|研究生学院|继续教育学院|网络教育学院|成人教育学院|远程教育学院|国际教育学院|国际学院|马克思主义学院|体育学院|体育部|人文学院|文学院|理学院|工学院|商学院|管理学院|经济学院|经济管理学院|法学院|医学院|护理学院|药学院|公共卫生学院|软件学院|计算机学院|信息学院|信息工程学院|电子信息学院|外国语学院|外语学院|艺术学院|音乐学院|美术学院|新闻学院|传播学院|教育学院|化学学院|物理学院|数学学院|生命科学学院|环境学院|材料学院|自动化学院|机械学院|土木学院|建筑学院|交通学院|航空航天学院|海洋学院|农学院|林学院|网络与信息中心|现代教育技术中心|信息化(?:办公室|中心)|信息中心|网络中心|图书馆|档案馆|校医院|后勤(?:集团|处)?|党委办公室|校长办公室|团委)$/;
+
+  /** 明确另一法人/另一报送主体 */
+  const DISTINCT_UNIT_RE =
+    /^(?:附属(?:中学|小学|幼儿园|中小学|学校)|独立学院|职业技术学院|职业学院|高等专科学校|师范专科学校|专科学校|分校|合作办学|联合学院)/;
+
+  /**
+   * 无歧义别名 → 规范全称（故意不做「东大/南大/长大」等易撞车简称）
+   * 一侧是别名、一侧是全称时仍可匹配
+   */
+  const SCHOOL_ALIAS_TO_FULL = {
+    清华: "清华大学",
+    北大: "北京大学",
+    复旦: "复旦大学",
+    上交: "上海交通大学",
+    上海交大: "上海交通大学",
+    交大闵行: "上海交通大学",
+    浙大: "浙江大学",
+    中科大: "中国科学技术大学",
+    中国科大: "中国科学技术大学",
+    国科大: "中国科学院大学",
+    华科: "华中科技大学",
+    华中科大: "华中科技大学",
+    人大: "中国人民大学",
+    北师大: "北京师范大学",
+    南开: "南开大学",
+    同济: "同济大学",
+    西交: "西安交通大学",
+    西安交大: "西安交通大学",
+    哈工大: "哈尔滨工业大学",
+    中山大学: "中山大学",
+    中大: "中山大学",
+    厦大: "厦门大学",
+    武大: "武汉大学",
+    川大: "四川大学",
+    电子科大: "电子科技大学",
+    成电: "电子科技大学",
+    北航: "北京航空航天大学",
+    北邮: "北京邮电大学",
+    北理: "北京理工大学",
+    华师: "华东师范大学",
+    华师大: "华东师范大学",
+    上财: "上海财经大学",
+    央财: "中央财经大学",
+    对外经贸: "对外经济贸易大学",
+    贸大: "对外经济贸易大学",
+  };
+
   function normalizeSchool(name) {
-    return name
+    if (!name) return "";
+    return String(name)
+      .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
       .replace(/[（(].*?[）)]/g, "")
       .replace(/版漏洞报送证书.*$/g, "")
       .replace(/漏洞报送证书.*$/g, "")
       .replace(/原创漏洞证书[-\s]*/g, "")
       .replace(/礼品[-\s]*/g, "")
-      .replace(/\d{4}/g, "")
+      .replace(/(?:的)?(?:漏洞|安全漏洞).*$/g, "")
+      .replace(/\d{4}\s*年?/g, "")
+      .replace(/[·・•．.、，,\s_/|－—–-]+/g, "")
+      .replace(/[東东]/g, "东")
+      .replace(/國/g, "国")
+      .replace(/學/g, "学")
+      .replace(/灣/g, "湾")
+      .replace(/門/g, "门")
+      .replace(/見/g, "见")
+      .replace(/務/g, "务")
+      .replace(/業/g, "业")
+      .replace(/義/g, "义")
+      .replace(/漢/g, "汉")
+      .replace(/華/g, "华")
+      .replace(/師/g, "师")
+      .replace(/範/g, "范")
+      .replace(/醫/g, "医")
+      .replace(/術/g, "术")
+      .replace(/電/g, "电")
+      .replace(/經/g, "经")
+      .replace(/濟/g, "济")
+      .replace(/態/g, "态")
+      .replace(/報/g, "报")
+      .replace(/大學/g, "大学")
+      .replace(/學院/g, "学院")
+      .replace(/學校/g, "学校")
       .trim();
+  }
+
+  /** 去掉内设院系/校区等同校尾巴，得到可用于比对的主体校名 */
+  function stripSameOrgTail(name) {
+    let s = normalizeSchool(name);
+    if (!s) return "";
+    for (let i = 0; i < 3; i++) {
+      const m = s.match(/^(.*?(?:职业技术学院|职业学院|大学|学院|学校))(.+)$/);
+      if (!m) break;
+      const [, head, rest] = m;
+      if (INTERNAL_UNIT_RE.test(rest)) {
+        s = head;
+        continue;
+      }
+      break;
+    }
+    return s;
+  }
+
+  function canonicalSchool(name) {
+    const core = stripSameOrgTail(name);
+    if (!core) return "";
+    return SCHOOL_ALIAS_TO_FULL[core] || core;
+  }
+
+  function aliasVariants(name) {
+    const core = stripSameOrgTail(name);
+    const full = canonicalSchool(name);
+    const set = new Set([core, full].filter(Boolean));
+    for (const [alias, target] of Object.entries(SCHOOL_ALIAS_TO_FULL)) {
+      if (target === full || target === core) set.add(alias);
+    }
+    return set;
+  }
+
+  /**
+   * longer 以 shorter 为前缀，且剩余部分像「另一所学校」
+   * 例：东南大学 + 成贤学院 → true；东南大学 + 软件学院 → false
+   */
+  function isDistinctSchoolExtension(shorter, longer) {
+    if (!shorter || !longer || longer === shorter) return false;
+    if (!longer.startsWith(shorter)) return false;
+    const rest = longer.slice(shorter.length);
+    if (!rest) return false;
+    if (INTERNAL_UNIT_RE.test(rest)) return false;
+    if (DISTINCT_UNIT_RE.test(rest)) return true;
+    // 大学 + 专名学院 → 独立学院（成贤学院、金陵学院、嘉庚学院…）
+    // 允许后缀还有系统描述：成贤学院某系统
+    const indieCollege = rest.match(/^([\u4e00-\u9fff]{1,10}学院)/);
+    if (
+      /大学$/.test(shorter) &&
+      indieCollege &&
+      !INTERNAL_UNIT_RE.test(indieCollege[1])
+    ) {
+      return true;
+    }
+    // 剩余整段仍是学校称谓，且不是内设单位
+    if (SCHOOL_TAIL_RE.test(rest) && !INTERNAL_UNIT_RE.test(rest)) return true;
+    // 更长短名整体是学校，且后缀以汉字延续校名
+    if (
+      SCHOOL_TAIL_RE.test(longer) &&
+      /^[\u4e00-\u9fff]/.test(rest) &&
+      !INTERNAL_UNIT_RE.test(rest) &&
+      rest.length >= 2
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * needle 出现在 haystack 的 index 处是否像「完整校名边界」
+   * 拒绝：华北[电力大学]、中国[科学技术大学] 这类中嵌
+   */
+  function hasSchoolBoundary(haystack, needle, index) {
+    if (index < 0) return false;
+    const before = haystack.slice(0, index);
+    const after = haystack.slice(index + needle.length);
+
+    if (before && /[\u4e00-\u9fffA-Za-z0-9]$/.test(before)) return false;
+
+    if (!after) return true;
+    if (INTERNAL_UNIT_RE.test(after)) return true;
+    if (/^(?:存在|系统|平台|网站|门户|首页|登录|管理|漏洞|安全|的)/.test(after)) return true;
+    if (isDistinctSchoolExtension(needle, needle + after)) return false;
+    if (SCHOOL_TAIL_RE.test(haystack) && /^[\u4e00-\u9fff]/.test(after)) {
+      return INTERNAL_UNIT_RE.test(after);
+    }
+    return true;
+  }
+
+  function containsSchoolName(haystack, needle) {
+    if (!haystack || !needle) return false;
+    if (needle.length < 2) return false;
+    // 过短且非别名的片段不允许 includes（防「大学」「学院」）
+    if (needle.length < 4 && !SCHOOL_ALIAS_TO_FULL[needle] && !SCHOOL_TAIL_RE.test(needle)) {
+      return false;
+    }
+    let from = 0;
+    while (from <= haystack.length - needle.length) {
+      const idx = haystack.indexOf(needle, from);
+      if (idx === -1) return false;
+      if (hasSchoolBoundary(haystack, needle, idx)) return true;
+      from = idx + 1;
+    }
+    return false;
+  }
+
+  function schoolMatches(vulnTitle, source) {
+    if (!source) return false;
+    const rawTitle = stripSameOrgTail(vulnTitle);
+    const rawSrc = stripSameOrgTail(source);
+    if (!rawTitle || !rawSrc) return false;
+
+    const title = canonicalSchool(vulnTitle);
+    const src = canonicalSchool(source);
+    if (!title || !src) return false;
+
+    if (title === src) return true;
+
+    // 别名集合相交（清华 ↔ 清华大学）
+    const titleAliases = aliasVariants(vulnTitle);
+    const srcAliases = aliasVariants(source);
+    for (const a of titleAliases) {
+      if (srcAliases.has(a)) return true;
+    }
+
+    // 母体 ↔ 独立学院 / 附属中小学 / 分校 等，双向拒绝
+    if (isDistinctSchoolExtension(src, title) || isDistinctSchoolExtension(title, src)) {
+      return false;
+    }
+    if (
+      isDistinctSchoolExtension(rawSrc, rawTitle) ||
+      isDistinctSchoolExtension(rawTitle, rawSrc)
+    ) {
+      return false;
+    }
+
+    // 边界安全的包含（漏洞标题里带校名+系统描述，或来源略短）
+    if (containsSchoolName(title, src)) return true;
+    if (src.length >= 4 && containsSchoolName(src, title)) return true;
+
+    return false;
   }
 
   function resolveGiftSchool(gift) {
@@ -279,12 +576,13 @@
     return "";
   }
 
-  const DEFAULT_MATCH_OPTIONS = { excludeFailed: true, includePending: false };
+  const DEFAULT_MATCH_OPTIONS = { excludeFailed: true, includePending: false, publicProfile: false };
 
   function normalizeMatchOptions(opts) {
     return {
       excludeFailed: opts?.excludeFailed !== false,
       includePending: !!opts?.includePending,
+      publicProfile: !!opts?.publicProfile,
     };
   }
 
@@ -384,16 +682,6 @@
     return [...new Set(hints)].slice(0, 6);
   }
 
-  function schoolMatches(vulnTitle, source) {
-    if (!source) return false;
-    const src = normalizeSchool(source);
-    const title = vulnTitle.trim();
-    if (!src || !title) return false;
-    if (title.includes(src)) return true;
-    if (title.length >= 4 && src.includes(title)) return true;
-    return false;
-  }
-
   function parseDate(s) {
     const [y, m, d] = s.split("-").map(Number);
     return new Date(y, m - 1, d || 1);
@@ -415,9 +703,21 @@
     if (afterFull) {
       return { after: parseDate(`${afterFull[1]}-${afterFull[2]}-${afterFull[3]}`) };
     }
+    const fromDay = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日起/);
+    if (fromDay) {
+      return { after: parseDate(`${fromDay[1]}-${fromDay[2]}-${fromDay[3]}`) };
+    }
+    const afterDay = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日后/);
+    if (afterDay) {
+      return { after: parseDate(`${afterDay[1]}-${afterDay[2]}-${afterDay[3]}`) };
+    }
     const afterMonth = text.match(/(\d{4})年(\d{1,2})月份?及以后/);
     if (afterMonth) {
       return { after: parseDate(`${afterMonth[1]}-${afterMonth[2]}-01`) };
+    }
+    const afterMonthShort = text.match(/(\d{4})年(\d{1,2})月后/);
+    if (afterMonthShort) {
+      return { after: parseDate(`${afterMonthShort[1]}-${afterMonthShort[2]}-01`) };
     }
     const since = text.match(/(\d{4})年(\d{1,2})月以来/);
     if (since) {
@@ -481,11 +781,38 @@
   }
 
   function parseRequirement(description, source) {
-    const text = description.replace(/\s+/g, " ");
+    const text = String(description || "").replace(/\s+/g, " ");
     const dateRange = extractDateRange(text);
     const orRules = parseOrRules(text);
     if (orRules.length > 1) {
       return { type: "or", rules: orRules, dateRange, source, raw: text };
+    }
+    const levelMap = { 严重: 4, 高危: 3, 中危: 2, 低危: 1 };
+    const oneSeverity = text.match(/至少.*?提交(?:过)?(?:一个|1\s*个).*?(严重|高危|中危|低危)/);
+    if (oneSeverity) {
+      return {
+        type: "count",
+        minLevel: levelMap[oneSeverity[1]] || 2,
+        count: 1,
+        dateRange,
+        source,
+        raw: text,
+      };
+    }
+    const andAbove = text.match(/提交(\d+)个及以上/);
+    if (andAbove) {
+      let level = 2;
+      if (/低危/.test(text)) level = 1;
+      else if (/严重/.test(text)) level = 4;
+      else if (/高危/.test(text)) level = 3;
+      return {
+        type: "count",
+        minLevel: level,
+        count: parseInt(andAbove[1], 10),
+        dateRange,
+        source,
+        raw: text,
+      };
     }
     const tongji = text.match(/(\d+)个低危/);
     const tongjiMid = text.match(/(\d+)个中危/);
@@ -633,9 +960,129 @@
     return results;
   }
 
+  function requiresPriorCert(description) {
+    return /已获得.*证书|已获.*漏洞报送证书|已获我校/.test(description || "");
+  }
+
+  function checkPriorCert(gift, certResults, opts) {
+    if (!requiresPriorCert(gift.description)) return { ok: true };
+    if (normalizeMatchOptions(opts).publicProfile) {
+      return { ok: false, reason: "需已获漏洞报送证书（公开页无法验证）", unverifiable: true };
+    }
+    const school = resolveGiftSchool(gift);
+    const relatedCerts = (certResults || []).filter((r) => {
+      const cs = resolveGiftSchool(r);
+      return cs && schoolMatches(school, cs);
+    });
+    if (!relatedCerts.length) {
+      return { ok: false, reason: "需先获得对应学校漏洞报送证书" };
+    }
+    if (relatedCerts.some((r) => !canRedeemLimit(r.limit))) {
+      return { ok: true };
+    }
+    if (relatedCerts.some((r) => r.eligible)) {
+      return { ok: false, reason: "需先兑换并获得漏洞报送证书" };
+    }
+    return { ok: false, reason: "需先获得对应学校漏洞报送证书" };
+  }
+
+  function isVendorGift(gift) {
+    const text = `${gift.source || ""}${gift.description || ""}`;
+    return /公司|Panabit|开发方|开发商|厂商/.test(text);
+  }
+
+  function needsManualCheck(description) {
+    return /(\d+)\s*家(?:学校|高校)|开发方|开发商请选择|不同系统.*或/.test(description || "");
+  }
+
+  function describeTangibleStatus(gift, evalResult, eligible, issues, opts) {
+    if (eligible) {
+      const pendingOnly =
+        evalResult.matchedVulns?.length > 0 &&
+        evalResult.matchedVulns.every((v) => !v.approved);
+      const base = `${evalResult.reason} · ${gift.price} 金币`;
+      if (pendingOnly && normalizeMatchOptions(opts).includePending) {
+        return `${base}（待审核，通过后正式可兑换）`;
+      }
+      return base;
+    }
+    if (needsManualCheck(gift.description)) {
+      const manual = "含额外人工审核条件，请阅读礼物描述";
+      return issues.length ? `${issues.join("；")}；${manual}` : manual;
+    }
+    return issues.join("；") || evalResult.reason;
+  }
+
+  function matchTangibleGifts(coins, gifts, vulns, opts, certResults) {
+    const o = normalizeMatchOptions(opts);
+    const results = [];
+    for (const gift of gifts) {
+      const school = resolveGiftSchool(gift);
+      const rule = parseRequirement(gift.description, school);
+      const evalResult = evaluateRule(rule, vulns || [], o);
+      const hasStock = gift.stock > 0;
+      const withinLimit = canRedeemLimit(gift.limit);
+      const canAfford = coins !== null && coins >= gift.price;
+      const certCheck = checkPriorCert(gift, certResults, o);
+
+      const issues = [];
+      if (!evalResult.eligible) issues.push(evalResult.reason);
+      if (!certCheck.ok) issues.push(certCheck.reason);
+      if (!hasStock) issues.push("库存不足");
+      if (!withinLimit) issues.push(`已达兑换上限（${gift.limit}）`);
+      if (coins === null) issues.push("未能读取金币余额");
+      else if (!canAfford) issues.push(`金币不足（需 ${gift.price}，当前 ${coins}）`);
+      if (isVendorGift(gift) && !evalResult.eligible && evalResult.matchedVulns?.length === 0) {
+        issues.push("开发方/厂商类礼物需自行核对漏洞归属");
+      }
+
+      const eligible =
+        evalResult.eligible &&
+        hasStock &&
+        withinLimit &&
+        canAfford &&
+        certCheck.ok &&
+        !certCheck.unverifiable;
+      const preview =
+        eligible &&
+        evalResult.matchedVulns?.length > 0 &&
+        evalResult.matchedVulns.every((v) => !v.approved);
+
+      const relatedVulns = (vulns || []).filter((v) => {
+        if (o.excludeFailed && isFailedVuln(v)) return false;
+        return schoolMatches(v.title, school);
+      });
+
+      const statusNote = describeTangibleStatus(gift, evalResult, eligible, issues, o);
+
+      results.push({
+        ...gift,
+        giftKind: "tangible",
+        eligible,
+        preview,
+        reason: evalResult.reason,
+        statusNote,
+        issues,
+        matchedVulns: evalResult.matchedVulns,
+        relatedVulns,
+        rule,
+        vendorGift: isVendorGift(gift),
+      });
+    }
+    results.sort((a, b) => {
+      if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+      if (a.preview !== b.preview) return a.preview ? 1 : -1;
+      return a.price - b.price;
+    });
+    return results;
+  }
+
   g.EdusrcMatcher = {
     matchCertificates,
+    matchTangibleGifts,
     normalizeSchool,
+    stripSameOrgTail,
+    canonicalSchool,
     schoolMatches,
     resolveGiftSchool,
     buildScanHints,
@@ -647,12 +1094,13 @@
 })(globalThis);
 
 (function (g) {
-  if (g.__EDUSRC_ENGINE_V__ !== 7 || !g.EdusrcParser) return;
+  if (g.__EDUSRC_ENGINE_V__ !== 14 || !g.EdusrcParser) return;
 
   const BASE = "https://src.sjtu.edu.cn";
   const GIFT_CATALOG_KEY = "edusrc_gift_catalog_v2";
+  const TANGIBLE_CATALOG_KEY = "edusrc_tangible_catalog_v2";
   const GIFT_CATALOG_TTL = 6 * 60 * 60 * 1000;
-  const { isLoginPage, extractUserId, parseVulnTable, getMaxPage, parseGiftList, parseGiftDetail } =
+  const { isLoginPage, extractUserId, extractCoins, extractPublicProfileMeta, isProfileNotFound, parseVulnTable, getMaxPage, parseGiftList, parseGiftDetail } =
     g.EdusrcParser;
 
   async function fetchPage(path) {
@@ -700,42 +1148,75 @@
     });
   }
 
-  async function getCatalogCache() {
-    const data = await chrome.storage.local.get(GIFT_CATALOG_KEY);
-    const cached = data[GIFT_CATALOG_KEY];
+  async function getCatalogCache(key = GIFT_CATALOG_KEY) {
+    const data = await chrome.storage.local.get(key);
+    const cached = data[key];
     if (!cached || Date.now() - cached.updatedAt > GIFT_CATALOG_TTL) return null;
     return cached.gifts;
   }
 
-  async function saveCatalogCache(gifts) {
-    await chrome.storage.local.set({ [GIFT_CATALOG_KEY]: { gifts, updatedAt: Date.now() } });
+  async function saveCatalogCache(gifts, key = GIFT_CATALOG_KEY) {
+    await chrome.storage.local.set({ [key]: { gifts, updatedAt: Date.now() } });
+  }
+
+  function isGiftRuleComplete(gift) {
+    return !!(gift && (gift.description || gift.source));
   }
 
   function mergeGiftListWithCatalog(giftList, catalog) {
     const map = new Map(catalog.map((item) => [item.id, item]));
     return giftList.map((item) => {
       const cached = map.get(item.id);
-      if (!cached) return item;
-      return { ...cached, name: item.name || cached.name, stock: item.stock, price: item.price, url: item.url };
+      if (!cached || !isGiftRuleComplete(cached)) return item;
+      return {
+        ...cached,
+        name: item.name || cached.name,
+        stock: item.stock,
+        price: item.price,
+        url: item.url,
+      };
     });
   }
 
   function createScanProgress(onProgress) {
     let vulnPct = 0;
     let giftPct = 0;
+    let tangiblePct = 0;
     const emit = (text, percentOverride) => {
       onProgress?.({
         text,
-        percent: percentOverride ?? Math.min(99, Math.round(vulnPct * 0.45 + giftPct * 0.5)),
+        percent:
+          percentOverride ??
+          Math.min(99, Math.round(vulnPct * 0.35 + giftPct * 0.35 + tangiblePct * 0.25)),
         running: true,
       });
     };
     return {
       vuln(text, pct) { vulnPct = pct; emit(text); },
       gift(text, pct) { giftPct = pct; emit(text); },
+      tangible(text, pct) { tangiblePct = pct; emit(text); },
       matching(text) { onProgress?.({ text, percent: 96, running: true }); },
       done(text) { onProgress?.({ text: text || "完成", percent: 100, running: false }); },
     };
+  }
+
+  async function resolveCoins(firstHtml, userId) {
+    let coins = extractCoins(firstHtml);
+    if (coins !== null) return coins;
+
+    const paths = ["/profile/detail/"];
+    if (userId && userId !== "self") paths.push(`/profile/${userId}/`);
+    paths.push("/gift/?gift_type=tangible_gift");
+
+    for (const path of paths) {
+      try {
+        coins = extractCoins(await fetchPage(path));
+        if (coins !== null) return coins;
+      } catch {
+        /* try next */
+      }
+    }
+    return null;
   }
 
   async function fetchAllVulns(progress) {
@@ -775,19 +1256,65 @@
     }
 
     progress.vuln(`已加载 ${vulns.length} 条漏洞（${vulns.filter((v) => v.approved).length} 条已通过）`, 100);
-    return { vulns, userId };
+    const coins = await resolveCoins(first, userId);
+    return { vulns, userId, coins };
   }
 
-  async function fetchAllGifts(progress) {
-    progress.gift("获取礼品列表…", 5);
-    const basePath = "/gift/?gift_type=certificate";
+  async function fetchUserVulns(targetUserId, progress) {
+    progress.vuln(`获取用户 ${targetUserId} 的公开漏洞…`, 5);
+    const basePath = `/profile/${targetUserId}/`;
+    const first = await fetchPage(basePath);
+    if (isLoginPage(first)) throw new Error("NOT_LOGGED_IN");
+    if (isProfileNotFound(first)) throw new Error("USER_NOT_FOUND");
+
+    const meta = extractPublicProfileMeta(first);
+    let vulns = parseVulnTable(first);
+    const seen = new Set(vulns.map((v) => v.id));
+    const maxPage = getMaxPage(first);
+
+    for (let page = 2; page <= maxPage; page++) {
+      progress.vuln(`公开漏洞 第 ${page}/${maxPage} 页`, 10 + Math.round(((page - 1) / maxPage) * 35));
+      const html = await fetchPage(`${basePath}?page=${page}`);
+      if (isProfileNotFound(html)) break;
+      for (const v of parseVulnTable(html)) {
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          vulns.push(v);
+        }
+      }
+    }
+
+    for (let page = maxPage + 1; page <= maxPage + 5; page++) {
+      const html = await fetchPage(`${basePath}?page=${page}`);
+      const batch = parseVulnTable(html);
+      if (!batch.length) break;
+      let added = 0;
+      for (const v of batch) {
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          vulns.push(v);
+          added++;
+        }
+      }
+      if (!added) break;
+    }
+
+    const approved = vulns.filter((v) => v.approved).length;
+    progress.vuln(`已加载 ${vulns.length} 条公开漏洞（${approved} 条有 Rank）`, 100);
+    const coins = meta.rank !== null ? meta.rank : null;
+    return { vulns, userId: String(targetUserId), coins, meta, coinsEstimated: true };
+  }
+
+  async function fetchGiftListByType(giftType, label, report) {
+    report(`获取${label}列表…`, 5);
+    const basePath = `/gift/?gift_type=${giftType}`;
     const first = await fetchPage(basePath);
     let gifts = parseGiftList(first);
     const seen = new Set(gifts.map((g) => g.id));
     const maxPage = getMaxPage(first);
 
     for (let page = 2; page <= maxPage; page++) {
-      progress.gift(`证书列表 第 ${page}/${maxPage} 页`, 5 + Math.round(((page - 1) / maxPage) * 25));
+      report(`${label} 第 ${page}/${maxPage} 页`, 5 + Math.round(((page - 1) / maxPage) * 25));
       const html = await fetchPage(`${basePath}&page=${page}`);
       for (const g of parseGiftList(html)) {
         if (!seen.has(g.id)) {
@@ -813,41 +1340,84 @@
     }
 
     const pages = maxPage > 1 ? maxPage : Math.ceil(gifts.length / 36) || 1;
-    progress.gift(`已加载 ${gifts.length} 个证书（共 ${pages} 页）`, 30);
+    report(`已加载 ${gifts.length} 个${label}（共 ${pages} 页）`, 30);
     return { gifts, giftPages: pages };
   }
 
-  async function enrichGiftsParallel(gifts, progress) {
+  async function fetchAllGifts(progress) {
+    return fetchGiftListByType("certificate", "证书", (text, pct) => progress.gift(text, pct));
+  }
+
+  async function fetchAllTangibleGifts(progress) {
+    return fetchGiftListByType("tangible_gift", "实物", (text, pct) => progress.tangible(text, pct));
+  }
+
+  async function enrichGiftsParallel(gifts, progress, label = "证书") {
     let done = 0;
     const total = gifts.length;
+    const report = label === "实物"
+      ? (text, pct) => progress.tangible(text, pct)
+      : (text, pct) => progress.gift(text, pct);
     return mapPool(gifts, 20, async (item) => {
       try {
         const html = await fetchPage(`/gift/${item.id}/`);
-        return { ...item, ...parseGiftDetail(html) };
+        const detail = parseGiftDetail(html);
+        return { ...item, ...detail };
       } catch {
         return item;
       } finally {
         done++;
         if (done === total || done % 5 === 0) {
-          progress.gift(`解析证书 ${done}/${total}`, 30 + Math.round((done / total) * 70));
+          report(`解析${label} ${done}/${total}`, 30 + Math.round((done / total) * 70));
         }
       }
     });
   }
 
+  async function ensureGiftRules(gifts, progress, label = "证书") {
+    const incomplete = gifts.filter((g) => !isGiftRuleComplete(g));
+    if (!incomplete.length) return gifts;
+    const repaired = await enrichGiftsParallel(incomplete, progress, label);
+    const map = new Map(repaired.map((g) => [g.id, g]));
+    return gifts.map((g) => map.get(g.id) || g);
+  }
+
   async function getEnrichedGifts(progress) {
-    const cached = await getCatalogCache();
+    const cached = await getCatalogCache(GIFT_CATALOG_KEY);
     const { gifts: giftList, giftPages } = await fetchAllGifts(progress);
     const listIds = giftList.map((g) => g.id).sort().join(",");
     const cachedIds = cached?.map((g) => g.id).sort().join(",");
+    let gifts;
     if (cached?.length && listIds === cachedIds) {
-      progress.gift(`证书规则命中缓存（${giftList.length} 个）`, 100);
-      return { gifts: mergeGiftListWithCatalog(giftList, cached), giftPages };
+      gifts = mergeGiftListWithCatalog(giftList, cached);
+      progress.gift(`证书规则命中缓存（${giftList.length} 个）`, 80);
+    } else {
+      gifts = await enrichGiftsParallel(giftList, progress, "证书");
     }
-    const enriched = await enrichGiftsParallel(giftList, progress);
-    await saveCatalogCache(enriched);
-    progress.gift(`已解析 ${enriched.length} 个证书`, 100);
-    return { gifts: enriched, giftPages };
+    gifts = await ensureGiftRules(gifts, progress, "证书");
+    const complete = gifts.filter(isGiftRuleComplete);
+    if (complete.length) await saveCatalogCache(complete, GIFT_CATALOG_KEY);
+    progress.gift(`已解析 ${gifts.length} 个证书`, 100);
+    return { gifts, giftPages };
+  }
+
+  async function getEnrichedTangibleGifts(progress) {
+    const cached = await getCatalogCache(TANGIBLE_CATALOG_KEY);
+    const { gifts: giftList, giftPages: tangiblePages } = await fetchAllTangibleGifts(progress);
+    const listIds = giftList.map((g) => g.id).sort().join(",");
+    const cachedIds = cached?.map((g) => g.id).sort().join(",");
+    let gifts;
+    if (cached?.length && listIds === cachedIds) {
+      gifts = mergeGiftListWithCatalog(giftList, cached);
+      progress.tangible(`实物规则命中缓存（${giftList.length} 个）`, 80);
+    } else {
+      gifts = await enrichGiftsParallel(giftList, progress, "实物");
+    }
+    gifts = await ensureGiftRules(gifts, progress, "实物");
+    const complete = gifts.filter(isGiftRuleComplete);
+    if (complete.length) await saveCatalogCache(complete, TANGIBLE_CATALOG_KEY);
+    progress.tangible(`已解析 ${gifts.length} 个实物`, 100);
+    return { gifts, tangiblePages };
   }
 
   function stripGiftSnapshot(r) {
@@ -865,19 +1435,138 @@
     return gift;
   }
 
+  function stripTangibleSnapshot(r) {
+    const {
+      eligible,
+      preview,
+      reason,
+      issues,
+      statusNote,
+      giftKind,
+      matchedVulns,
+      relatedVulns,
+      rule,
+      vendorGift,
+      ...gift
+    } = r;
+    return gift;
+  }
+
   function rematchScan(scan, options) {
     const opts = g.EdusrcMatcher.normalizeMatchOptions(options || scan.matchOptions);
     const gifts = scan.giftSnapshots || (scan.results || []).map(stripGiftSnapshot);
+    const tangibleGifts =
+      scan.tangibleSnapshots || (scan.tangibleResults || []).map(stripTangibleSnapshot);
     const vulns = scan.vulns || [];
     const results = g.EdusrcMatcher.matchCertificates(vulns, gifts, opts);
     const hints = g.EdusrcMatcher.buildScanHints(vulns, gifts, opts);
+    const tangibleResults = g.EdusrcMatcher.matchTangibleGifts(
+      scan.coins ?? null,
+      tangibleGifts,
+      vulns,
+      opts,
+      results
+    );
     return {
       ...scan,
       results,
       hints,
+      tangibleResults,
       matchOptions: opts,
       countableCount: vulns.filter((v) => g.EdusrcMatcher.isCountableVuln(v, opts)).length,
       approvedCount: vulns.filter((v) => v.approved).length,
+    };
+  }
+
+  function rematchUserScan(scan, options) {
+    const opts = g.EdusrcMatcher.normalizeMatchOptions({
+      ...(scan.matchOptions || {}),
+      ...(options || {}),
+      publicProfile: true,
+    });
+    const gifts = scan.giftSnapshots || (scan.results || []).map(stripGiftSnapshot);
+    const tangibleGifts =
+      scan.tangibleSnapshots || (scan.tangibleResults || []).map(stripTangibleSnapshot);
+    const vulns = scan.vulns || [];
+    const results = g.EdusrcMatcher.matchCertificates(vulns, gifts, opts);
+    const hints = g.EdusrcMatcher.buildScanHints(vulns, gifts, opts);
+    const tangibleResults = g.EdusrcMatcher.matchTangibleGifts(
+      scan.coins ?? null,
+      tangibleGifts,
+      vulns,
+      opts,
+      results
+    );
+    return {
+      ...scan,
+      results,
+      hints,
+      tangibleResults,
+      matchOptions: opts,
+      countableCount: vulns.filter((v) => g.EdusrcMatcher.isCountableVuln(v, opts)).length,
+      approvedCount: vulns.filter((v) => v.approved).length,
+    };
+  }
+
+  async function runUserScan(targetUserId, onProgress, options) {
+    const opts = g.EdusrcMatcher.normalizeMatchOptions({ ...(options || {}), publicProfile: true });
+    const progress = createScanProgress(onProgress);
+    progress.vuln("开始分析他人…", 0);
+    progress.gift("加载证书规则…", 0);
+    progress.tangible("加载实物规则…", 0);
+
+    const [{ vulns, userId, coins, meta, coinsEstimated }, { gifts, giftPages }, { gifts: tangibleGifts, tangiblePages }] =
+      await Promise.all([
+        fetchUserVulns(targetUserId, progress),
+        getEnrichedGifts(progress),
+        getEnrichedTangibleGifts(progress),
+      ]);
+
+    progress.matching("匹配可兑换礼品…");
+    const results = g.EdusrcMatcher.matchCertificates(vulns, gifts, opts);
+    const hints = [
+      ...g.EdusrcMatcher.buildScanHints(vulns, gifts, opts),
+      "公开主页不含审核状态，Rank>0 视为已通过",
+      coinsEstimated ? "金币按 Rank 估算（1:1），实际余额可能不同" : "",
+    ].filter(Boolean);
+    const tangibleResults = g.EdusrcMatcher.matchTangibleGifts(
+      coins,
+      tangibleGifts,
+      vulns,
+      opts,
+      results
+    );
+    progress.done("分析完成");
+
+    return {
+      scanMode: "user",
+      userId,
+      targetUser: {
+        userId: String(targetUserId),
+        nickname: meta.nickname || `用户 ${targetUserId}`,
+        rank: meta.rank,
+        approvedCount: meta.approvedCount,
+        totalCount: meta.totalCount,
+        profileUrl: `https://src.sjtu.edu.cn/profile/${targetUserId}/`,
+      },
+      coins,
+      coinsEstimated,
+      vulnCount: vulns.length,
+      approvedCount: vulns.filter((v) => v.approved).length,
+      countableCount: vulns.filter((v) => g.EdusrcMatcher.isCountableVuln(v, opts)).length,
+      giftCount: gifts.length,
+      giftPages,
+      tangibleCount: tangibleGifts.length,
+      tangiblePages,
+      vulns,
+      giftSnapshots: gifts,
+      tangibleSnapshots: tangibleGifts,
+      matchOptions: opts,
+      results,
+      hints: [...new Set(hints)].slice(0, 8),
+      tangibleResults,
+      scannedAt: Date.now(),
+      engineVersion: g.__EDUSRC_ENGINE_V__,
     };
   }
 
@@ -886,30 +1575,46 @@
     const progress = createScanProgress(onProgress);
     progress.vuln("开始扫描…", 0);
     progress.gift("准备加载证书…", 0);
-    const [{ vulns, userId }, { gifts, giftPages }] = await Promise.all([
-      fetchAllVulns(progress),
-      getEnrichedGifts(progress),
-    ]);
-    progress.matching("匹配可兑换证书…");
+    progress.tangible("准备加载实物…", 0);
+    const [{ vulns, userId, coins }, { gifts, giftPages }, { gifts: tangibleGifts, tangiblePages }] =
+      await Promise.all([
+        fetchAllVulns(progress),
+        getEnrichedGifts(progress),
+        getEnrichedTangibleGifts(progress),
+      ]);
+    progress.matching("匹配可兑换礼品…");
     const results = g.EdusrcMatcher.matchCertificates(vulns, gifts, opts);
     const hints = g.EdusrcMatcher.buildScanHints(vulns, gifts, opts);
+    const tangibleResults = g.EdusrcMatcher.matchTangibleGifts(
+      coins,
+      tangibleGifts,
+      vulns,
+      opts,
+      results
+    );
     progress.done("扫描完成");
     return {
+      scanMode: "self",
       userId,
+      coins,
       vulnCount: vulns.length,
       approvedCount: vulns.filter((v) => v.approved).length,
       countableCount: vulns.filter((v) => g.EdusrcMatcher.isCountableVuln(v, opts)).length,
       giftCount: gifts.length,
       giftPages,
+      tangibleCount: tangibleGifts.length,
+      tangiblePages,
       vulns,
       giftSnapshots: gifts,
+      tangibleSnapshots: tangibleGifts,
       matchOptions: opts,
       results,
       hints,
+      tangibleResults,
       scannedAt: Date.now(),
       engineVersion: g.__EDUSRC_ENGINE_V__,
     };
   }
 
-  g.EdusrcApi = { runScan, rematchScan, fetchPage, isLoginPage };
+  g.EdusrcApi = { runScan, runUserScan, rematchScan, rematchUserScan, fetchPage, isLoginPage };
 })(globalThis);
